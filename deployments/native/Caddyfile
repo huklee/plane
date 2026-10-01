@@ -1,0 +1,56 @@
+# Plane internal proxy on 127.0.0.1:58080. The public front proxy forwards /plane/* and /plane-uploads/* here
+# unchanged, keeping the Host header (S3 presigned URLs are signed for it). Run with PLANE_RUNTIME and PLANE_SRC set.
+{
+	admin off
+	auto_https off
+	servers {
+		trusted_proxies static 127.0.0.1/32
+	}
+}
+
+http://:58080 {
+	bind 127.0.0.1
+	log {
+		output file {$PLANE_RUNTIME}/logs/access.log
+	}
+	request_body {
+		max_size 6MB
+	}
+	encode zstd gzip
+	@hashed path_regexp hashed ^/plane/(god-mode/)?assets/
+	header @hashed Cache-Control "public, max-age=31536000, immutable"
+
+	redir /plane /plane/ permanent
+
+	@api path /plane/api/* /plane/auth/* /plane/static/*
+	handle @api {
+		uri strip_prefix /plane
+		reverse_proxy 127.0.0.1:58000
+	}
+	handle /plane/live/* {
+		reverse_proxy 127.0.0.1:53100
+	}
+	handle /plane-uploads* {
+		reverse_proxy 127.0.0.1:59000
+	}
+	redir /plane/god-mode /plane/god-mode/ permanent
+	handle /plane/god-mode/* {
+		uri strip_prefix /plane/god-mode
+		root * {$PLANE_SRC}/apps/admin/build/client
+		try_files {path} /index.html
+		file_server
+	}
+	redir /plane/spaces /plane/spaces/ permanent
+	handle /plane/spaces/* {
+		reverse_proxy 127.0.0.1:53002
+	}
+	handle /plane/* {
+		uri strip_prefix /plane
+		root * {$PLANE_SRC}/apps/web/build/client
+		try_files {path} /index.html
+		file_server
+	}
+	handle {
+		respond "not found" 404
+	}
+}

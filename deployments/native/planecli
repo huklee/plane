@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""planecli — Plane work items from the terminal (stock Plane REST API v1, no dependencies).
+
+  planecli projects | states | list [--state S] | get SBX-1
+  planecli add "Title" [--state S] [--priority P] [--start YYYY-MM-DD] [--due YYYY-MM-DD] [--desc TEXT] [--assign-me]
+  planecli edit SBX-1 [--name N] [--state S] [--priority P] [--start D] [--due D] [--desc TEXT] [--clear-dates]
+  planecli comment SBX-1 "text" | history SBX-1 | delete SBX-1
+
+Env: PLANE_URL (e.g. https://host/plane), PLANE_API_KEY (else $PLANE_RUNTIME/api-token),
+     PLANE_WORKSPACE (slug), PLANE_PROJECT (identifier, default SBX). States match by name or group, case-insensitive.
+"""
+from __future__ import annotations
+
+import argparse
+import html
+import json
+import os
+import ssl
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+URL = os.environ.get("PLANE_URL", "").rstrip("/")
+WS = os.environ.get("PLANE_WORKSPACE", "")
+PROJECT = os.environ.get("PLANE_PROJECT", "SBX")
+PRIORITIES = ("urgent", "high", "medium", "low", "none")
+
+
+def need() -> None:
+    if not URL or not WS:
+        sys.exit("set PLANE_URL (e.g. https://host/plane) and PLANE_WORKSPACE (workspace slug)")
+
+
+def key() -> str:
+    k = os.environ.get("PLANE_API_KEY") or (Path(os.environ.get("PLANE_RUNTIME", Path.home() / "plane-runtime")) / "api-token").read_text().strip()
+    if not k:
+        sys.exit("PLANE_API_KEY not set")
+    return k
+
+
+def call(method: str, path: str, body: dict | None = None):
+    req = urllib.request.Request(f"{URL}/api/v1/workspaces/{WS}/{path.lstrip('/')}", method=method,
+                                 data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"X-API-Key": key(), "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, context=ssl.create_default_context(), timeout=30) as r:
+            raw = r.read()
+            return json.loads(raw) if raw else None
+    except urllib.error.HTTPError as e:
+        sys.exit(f"{method} {path}: HTTP {e.code} {e.read().decode()[:300]}")
+
+
+def results(d):
+    return d.get("results", d) if isinstance(d, dict) else d
+
+
+def project() -> dict:
+    for p in results(call("GET", "projects/")):
+        if p["identifier"].upper() == PROJECT.upper() or p["id"] == PROJECT:
+            return p
+    sys.exit(f"project {PROJECT} not found")
+
+
+def states(pid: str) -> list[dict]:
+    return results(call("GET", f"projects/{pid}/states/"))
+
+
+def state_id(pid: str, name: str) -> str:
+    sts = states(pid)
+    for field in ("name", "group"):
+        for s in sts:
+            if s[field].lower() == name.lower():
+                return s["id"]
+    sys.exit(f"state {name!r} not in: " + ", ".join(f"{s['name']} ({s['group']})" for s in sts))
+
+
+def item(ref: str) -> dict:
+    """SBX-12 or a bare number (in PLANE_PROJECT)."""
+    ref = ref if "-" in ref else f"{PROJECT}-{ref}"
+    return call("GET", f"work-items/{ref.upper()}/")
+
+
+def fields(a, pid: str) -> dict:
+    out = {}
+    if getattr(a, "name", None):
+        out["name"] = a.name
+    if a.state:
+        out["state"] = state_id(pid, a.state)
+    if a.priority:
+        out["priority"] = a.priority
+    if a.start:
+        out["start_date"] = a.start
+    if a.due:
+        out["target_date"] = a.due
+    if getattr(a, "clear_dates", False):
+        out.update(start_date=None, target_date=None)
+    if a.desc is not None:
+        out["description_html"] = f"<p>{html.escape(a.desc)}</p>"
+    return out
+
+
+def row(i: dict, names: dict) -> str:
+    return (f"{PROJECT}-{i['sequence_id']:<4} {names.get(i['state'], '?'):<12} {i['priority']:<7} "
+            f"{i.get('start_date') or '-':<10} → {i.get('target_date') or '-':<10}  {i['name']}")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(prog="planecli", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("projects")
+    sub.add_parser("states")
+    ls = sub.add_parser("list")
+    ls.add_argument("--state")
+    sub.add_parser("get").add_argument("ref")
+    for name in ("add", "edit"):
+        p = sub.add_parser(name)
+        p.add_argument("ref" if name == "edit" else "title")
+        if name == "edit":
+            p.add_argument("--name")
+            p.add_argument("--clear-dates", action="store_true")
+        p.add_argument("--state")
+        p.add_argument("--priority", choices=PRIORITIES)
+        p.add_argument("--start", help="YYYY-MM-DD")
+        p.add_argument("--due", help="YYYY-MM-DD")
+        p.add_argument("--desc")
+        if name == "add":
+            p.add_argument("--assign-me", action="store_true")
+    c = sub.add_parser("comment")
+    c.add_argument("ref")
+    c.add_argument("text")
+    sub.add_parser("history").add_argument("ref")
+    sub.add_parser("delete").add_argument("ref")
+    a = ap.parse_args()
+    need()
+
+    if a.cmd == "projects":
+        for p in results(call("GET", "projects/")):
+            print(f"{p['identifier']:<6} {p['name']}  ({p['id']})")
+        return
+    p = project()
+    pid = p["id"]
+    names = {s["id"]: s["name"] for s in states(pid)}
+    if a.cmd == "states":
+        for s in states(pid):
+            print(f"{s['name']:<14} {s['group']}")
+    elif a.cmd == "list":
+        sid = state_id(pid, a.state) if a.state else None
+        items = [i for i in results(call("GET", f"projects/{pid}/work-items/?per_page=100"))
+                 if not sid or i["state"] == sid]
+        for i in sorted(items, key=lambda i: i["sequence_id"]):
+            print(row(i, names))
+    elif a.cmd == "get":
+        i = item(a.ref)
+        print(row(i, names))
+        print(f"  created {i['created_at']}  updated {i['updated_at']}  completed {i.get('completed_at') or '-'}")
+        print(f"  {URL}/{WS}/browse/{PROJECT}-{i['sequence_id']}/")
+    elif a.cmd == "add":
+        body = {"name": a.title, **fields(a, pid)}
+        if a.assign_me:
+            body["assignees"] = [call("GET", "../../users/me/")["id"]]
+        i = call("POST", f"projects/{pid}/work-items/", body)
+        print("created", row(i, names))
+    elif a.cmd == "edit":
+        body = fields(a, pid)
+        if not body:
+            sys.exit("nothing to change")
+        i = call("PATCH", f"projects/{pid}/work-items/{item(a.ref)['id']}/", body)
+        print("updated", row(i, names))
+    elif a.cmd == "comment":
+        call("POST", f"projects/{pid}/work-items/{item(a.ref)['id']}/comments/",
+             {"comment_html": f"<p>{html.escape(a.text)}</p>"})
+        print("commented")
+    elif a.cmd == "history":
+        for x in results(call("GET", f"projects/{pid}/work-items/{item(a.ref)['id']}/activities/")):
+            old, new = x.get("old_value"), x.get("new_value")
+            print(f"{x['created_at'][:19]}  {x.get('field') or x.get('verb')}: {old or ''} → {new or ''}")
+    elif a.cmd == "delete":
+        call("DELETE", f"projects/{pid}/work-items/{item(a.ref)['id']}/")
+        print("deleted")
+
+
+if __name__ == "__main__":
+    main()
