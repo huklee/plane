@@ -7,7 +7,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import type { AxiosInstance, AxiosRequestConfig } from "axios";
 import { create } from "axios";
-import { normalizeAPIRequestURL } from "@plane/services";
+import { WEB_BASE_PATH } from "@plane/constants";
+import { normalizeAPIRequestURL, unauthorizedRedirectURL } from "@plane/services";
 
 export abstract class APIService {
   protected baseURL: string;
@@ -41,15 +42,10 @@ export abstract class APIService {
       (response) => response,
       (error) => {
         if (error.response && error.response.status === 401) {
-          const currentPath = window.location.pathname;
-          // The entry page ("/") runs its own current-user request on mount;
-          // when the session is expired that request 401s too, and redirecting
-          // "/" to "/?next_path=/" reloads the page in an endless loop instead of
-          // letting the sign-in screen render. Only bounce away from private
-          // routes.
-          if (currentPath !== "/") {
-            window.location.replace(`/${currentPath ? `?next_path=${encodeURIComponent(currentPath)}` : ``}`);
-          }
+          // The entry page runs its own current-user request; the helper returns null there
+          // instead of redirecting (see unauthorizedRedirectURL).
+          const redirectURL = unauthorizedRedirectURL(window.location.pathname, WEB_BASE_PATH);
+          if (redirectURL) window.location.replace(redirectURL);
         }
         return Promise.reject(error);
       }

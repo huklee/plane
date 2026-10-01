@@ -51,3 +51,24 @@ function isForeignAbsoluteURL(url: string, baseURL: string): boolean {
     return false;
   }
 }
+
+/**
+ * Where to send the browser when an API call returns 401, for an app served under
+ * `basePath` (e.g. "/plane" when the web app is not at the domain root). `next_path` is
+ * kept router-relative (without the base path) because the router adds the basename.
+ * Returns null on the entry page itself: it runs its own current-user request on mount,
+ * and bouncing "/" to "/?next_path=/" would reload it in a loop.
+ *
+ * Examples (basePath "/plane"):
+ *   "/plane/ws/projects/" -> "/plane/?next_path=%2Fws%2Fprojects%2F"
+ *   "/plane/" | "/plane"  -> null
+ * Examples (basePath ""):
+ *   "/ws/projects/"       -> "/?next_path=%2Fws%2Fprojects%2F"
+ */
+export function unauthorizedRedirectURL(pathname: string, basePath: string): string | null {
+  const base = basePath.replace(/\/+$/, "");
+  const inBase = base && (pathname === base || pathname.startsWith(`${base}/`));
+  const routePath = inBase ? pathname.slice(base.length) || "/" : pathname;
+  if (routePath === "/") return null;
+  return `${base}/?next_path=${encodeURIComponent(routePath)}`;
+}

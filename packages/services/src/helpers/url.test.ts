@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { ensureAPITrailingSlash, normalizeAPIRequestURL } from "./url";
+import { ensureAPITrailingSlash, normalizeAPIRequestURL, unauthorizedRedirectURL } from "./url";
 
 describe("ensureAPITrailingSlash", () => {
   it.each([
@@ -49,5 +49,20 @@ describe("normalizeAPIRequestURL", () => {
     expect(normalizeAPIRequestURL("https://api.plane.so/api/foo", "https://api.plane.so")).toBe(
       "https://api.plane.so/api/foo/"
     );
+  });
+});
+
+describe("unauthorizedRedirectURL", () => {
+  it.each([
+    ["/ws/projects/", "", "/?next_path=%2Fws%2Fprojects%2F"],
+    ["/", "", null],
+    ["/plane/ws/projects/", "/plane", "/plane/?next_path=%2Fws%2Fprojects%2F"],
+    ["/plane/ws/projects/", "/plane/", "/plane/?next_path=%2Fws%2Fprojects%2F"],
+    ["/plane/", "/plane", null],
+    ["/plane", "/plane", null],
+    // a sibling path that merely shares the prefix is not inside the base path
+    ["/planet/x/", "/plane", "/plane/?next_path=%2Fplanet%2Fx%2F"],
+  ])("pathname %j with base %j -> %j", (pathname, basePath, expected) => {
+    expect(unauthorizedRedirectURL(pathname, basePath)).toBe(expected);
   });
 });
