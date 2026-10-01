@@ -134,6 +134,15 @@ MIDDLEWARE = [
     "plane.middleware.logger.RequestLoggerMiddleware",
 ]
 
+# Single-user auto login (private instances only): sign unauthenticated browser requests in
+# as this user. See plane/authentication/middleware/auto_login.py.
+AUTO_LOGIN_EMAIL = os.environ.get("AUTO_LOGIN_EMAIL", "")
+if AUTO_LOGIN_EMAIL:
+    MIDDLEWARE.insert(
+        MIDDLEWARE.index("django.contrib.auth.middleware.AuthenticationMiddleware") + 1,
+        "plane.authentication.middleware.auto_login.AutoLoginMiddleware",
+    )
+
 # Rest Framework settings
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": ("rest_framework.authentication.SessionAuthentication",),
