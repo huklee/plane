@@ -59,6 +59,14 @@ All services bind to 127.0.0.1; only the front proxy is reachable.
 6. `./plane.sh start`, then open `https://<host>/plane/god-mode/` to create the instance admin
    (untick telemetry if you want none).
 
+## Single-user mode (no login screen)
+
+Set `AUTO_LOGIN_EMAIL` in `api.env` and restart the API: every browser request without a session
+is signed in as that active user (god-mode too, if the user is an instance admin). API-key
+requests (`/api/v1/`) are unaffected. Signing out just signs you back in. Anyone who can reach
+the instance acts as that user, so only use it behind a trusted boundary (e.g. tailnet-only).
+Implemented in `apps/api/plane/authentication/middleware/auto_login.py` (off unless the variable is set).
+
 ## Front proxy requirements
 
 The proxy in front of Caddy must:
@@ -77,6 +85,8 @@ The proxy in front of Caddy must:
 - Caddy binds with `SO_REUSEPORT`: an orphaned old Caddy keeps answering on the same port with an
   old config. `plane.sh` runs services with `exec` inside tmux so `stop` kills them; check
   `lsof -iTCP:58080 -sTCP:LISTEN` if responses look stale.
+- `tmux kill-session` only sends SIGHUP: gunicorn treats it as "reload" and Redis/Caddy ignore it, so
+  services survive as orphans that keep their ports. `plane.sh stop` sends SIGTERM first.
 - The Caddy site address must be `http://:58080` (any host): with `http://127.0.0.1:58080`
   requests carrying the public `Host` get an empty 200.
 - A logged-out deep link (e.g. `/plane/<workspace>/projects/`) can sit on the loading spinner;

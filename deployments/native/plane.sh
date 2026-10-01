@@ -12,7 +12,9 @@ cd "$R"
 svc() { # name dir command...
   local name=$1 dir=$2; shift 2
   tmux has-session -t "plane-$name" 2>/dev/null && { echo "  plane-$name already running"; return; }
-  tmux new-session -d -s "plane-$name" -c "$dir" "exec $* >> $R/logs/$name.log 2>&1"
+  # tmux sessions inherit the tmux server's environment, not ours: pass the paths explicitly
+  tmux new-session -d -s "plane-$name" -c "$dir" \
+    "exec env PLANE_RUNTIME='$PLANE_RUNTIME' PLANE_SRC='$PLANE_SRC' PLANE_PUBLIC_URL='$PLANE_PUBLIC_URL' $* >> $R/logs/$name.log 2>&1"
   echo "  plane-$name started"
 }
 
@@ -33,8 +35,14 @@ start() {
 }
 
 stop() {
+  # SIGTERM the service first: tmux kill-session only sends SIGHUP, which gunicorn treats
+  # as "reload" and redis/caddy ignore, leaving orphans that keep the ports.
   for s in caddy space live beat worker api minio redis; do
-    tmux kill-session -t "plane-$s" 2>/dev/null && echo "  plane-$s stopped"
+    pid=$(tmux list-panes -t "plane-$s" -F '#{pane_pid}' 2>/dev/null) || continue
+    kill -TERM "$pid" 2>/dev/null
+    for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+    tmux kill-session -t "plane-$s" 2>/dev/null
+    echo "  plane-$s stopped"
   done
   pkill -f "$R/bin/caddy run" 2>/dev/null; pkill -f "celery -A plane" 2>/dev/null
   pg/bin/pg_ctl -D data/pg stop -m fast >/dev/null 2>&1 && echo "  postgres stopped"
